@@ -1,26 +1,49 @@
 class Interrupts {
-    public bool enabled = false;
-    public byte mask = 0;
-    public byte flags = 0;
-    public bool vblank() { return enabled ? (mask & 1 << 0) == 1 : false; }
-    public bool lcd_stat() { return enabled ? (mask & 1 << 1 ) == 1 : false; }
-    public bool timer() { return enabled ? (mask & 1 << 2 ) == 1 : false; }
-    public bool serial() { return enabled ? (mask & 1 << 3) == 1 : false;  }
-    public bool joypad() { return enabled ? (mask & 1 << 4) == 1 : false; }
+    public bool enabled = false; // IME - gates whether any dispatch happens at all
+    public byte mask = 0;  // IE (0xffff) - which sources are allowed to fire
+    public byte flags = 0; // IF (0xff0f) - which sources currently have a pending request
+
+    public const int VBlankBit = 0;
+    public const int LCDStatBit = 1;
+    public const int TimerBit = 2;
+    public const int SerialBit = 3;
+    public const int JoypadBit = 4;
+
+    public bool vblank_enabled() { return (mask & (1 << VBlankBit)) != 0; }
+    public bool lcd_stat_enabled() { return (mask & (1 << LCDStatBit)) != 0; }
+    public bool timer_enabled() { return (mask & (1 << TimerBit)) != 0; }
+    public bool serial_enabled() { return (mask & (1 << SerialBit)) != 0; }
+    public bool joypad_enabled() { return (mask & (1 << JoypadBit)) != 0; }
+
+    // For the PPU/timer/etc to call when a source wants to fire. Whether it
+    // actually gets dispatched is still gated by `enabled` and `mask` - that's
+    // the CPU's job (not yet implemented).
+    public void Request(int bit) { flags |= (byte)(1 << bit); }
 }
 
 class STATE {
     byte[] ROM;
     byte[] WRAM1 = new byte[4096];
     byte[] WRAM2 = new byte[4096];
-    byte[] HRAM = new byte[0xfffe - 0xff80];
-    byte[] VRAM = new byte[0x9fff - 0x8000];
-    byte[] IO = new byte[0xff7f - 0xff00];
+    byte[] HRAM = new byte[0xfffe - 0xff80 + 1];
+    byte[] VRAM = new byte[0x9fff - 0x8000 + 1];
+    byte[] OAM = new byte[0xfe9f - 0xfe00 + 1];
+    byte[] IO = new byte[0xff7f - 0xff00 + 1];
     public Interrupts interrupts = new Interrupts();
     public Debugger? debug_hook = null;
     public bool had_invalid_access = false;
     string rom_path_ = "";
-    
+
+    // PPU-owned register state. The CPU can't write these directly - a
+    // future PPU will update them as it steps through modes/scanlines.
+    public byte LY = 0;
+    byte statHardwareBits = 0; // bits 0-2: mode (0-1) + coincidence (2)
+
+    public void SetLY(byte v) { LY = v; }
+    public void SetSTATHardwareBits(int mode, bool coincidence) {
+        statHardwareBits = (byte)((mode & 0x3) | (coincidence ? 1 << 2 : 0));
+    }
+
     public STATE (string rom_path) {
         rom_path_ = rom_path;
         Console.WriteLine("READING ROM: {0}", rom_path);
@@ -34,17 +57,19 @@ class STATE {
         Array.Clear(WRAM2);
         Array.Clear(HRAM);
         Array.Clear(VRAM);
+        Array.Clear(OAM);
         Array.Clear(IO);
+        LY = 0;
+        statHardwareBits = 0;
         ROM = System.IO.File.ReadAllBytes(rom_path_);
     }
 
+    // Raw storage access with no special-register semantics - used by read8/
+    // write8 for the plumbing, and by the debugger to peek/poke memory
+    // (including registers) without hardware restrictions getting in the way.
     public ref byte addrNoHook(ushort idx) {
-        // if (idx == 0xc800) {
-            // debug_hook.memAccessHook
-        // }
         if (idx <= 0x7fff)
         {
-            // Console.WriteLine("Returning ROM address : {0:X4}",)
             return ref ROM[idx];
         }
 
@@ -74,8 +99,12 @@ class STATE {
 
         if (idx >= 0x8000 && idx <= 0x9fff)
         {
-            // Console.WriteLine("access to vram which is not implemented {0:x4}", idx);
             return ref VRAM[idx - 0x8000];
+        }
+
+        if (idx >= 0xfe00 && idx <= 0xfe9f)
+        {
+            return ref OAM[idx - 0xfe00];
         }
 
         // -- IO --
@@ -87,16 +116,9 @@ class STATE {
         {
             return ref interrupts.flags;
         }
-        else if (idx == 0xff44)
-        {
-            // LY
-            IO[0xff44 - 0xff00] = 0x90;
-            return ref IO[idx - 0xff00];//90;
-        }
 
         if (idx >= 0xff00 && idx <= 0xff7f)
         {
-            // Console.WriteLine("access to io memory which is not implemented! {0:x4}", idx);
             return ref IO[idx - 0xff00];
         }
 
@@ -110,5 +132,56 @@ class STATE {
             debug_hook.memAccessHook(idx);
 
         return ref addrNoHook(idx);
+    }
+
+    // CPU-facing accessors. Unlike addr()/addrNoHook(), these enforce the
+    // hardware semantics that a plain array reference can't express: LY is
+    // read-only, STAT's low 3 bits are PPU-owned, and writing DMA kicks off
+    // an OAM copy.
+    public byte read8(ushort idx) {
+        if (debug_hook != null)
+            debug_hook.memAccessHook(idx);
+
+        if (idx == 0xff44) // LY
+        {
+            return LY;
+        }
+
+        if (idx == 0xff41) // STAT
+        {
+            byte upper = IO[idx - 0xff00];
+            return (byte)((upper & 0xf8) | statHardwareBits);
+        }
+
+        return addrNoHook(idx);
+    }
+
+    public void write8(ushort idx, byte value) {
+        if (debug_hook != null)
+            debug_hook.memAccessHook(idx);
+
+        if (idx == 0xff44) // LY is read-only to the CPU
+        {
+            return;
+        }
+
+        if (idx == 0xff41) // STAT - only the upper 5 bits (interrupt sources) are CPU-writable
+        {
+            IO[idx - 0xff00] = (byte)(value & 0xf8);
+            return;
+        }
+
+        if (idx == 0xff46) // DMA - write triggers a 160-byte copy into OAM
+        {
+            IO[idx - 0xff00] = value;
+            ushort src = (ushort)(value << 8);
+            for (int i = 0; i < 0xa0; i++)
+            {
+                OAM[i] = addrNoHook((ushort)(src + i));
+            }
+            return;
+        }
+
+        addrNoHook(idx) = value;
     }
 }

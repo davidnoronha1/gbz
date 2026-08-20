@@ -12,8 +12,9 @@ class GBEmulator {
     public void run() {
         while (true) {
             dbg.DebugTick(); // here opcode is set
-            cpu.Tick();
+            int cycles = cpu.Tick();
             dbg.IncrementPC();
+            // TODO: ppu.Step(cycles) once the PPU exists (see IMPL.md)
         }
     }
 }

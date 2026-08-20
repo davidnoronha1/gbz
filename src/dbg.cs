@@ -165,7 +165,7 @@ class Debugger {
     }
 
     bool stop_at_invalid_access = true;
-    bool cross_verify = true;
+    bool cross_verify = false;
     bool no_print_every_instr = true;
     string serial_buffer = "";
     int contN = 0;

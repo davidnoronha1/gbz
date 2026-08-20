@@ -144,9 +144,32 @@ class CPU
 
     public UInt16 SP { get; private set; } = 0xFFFE;
     STATE S;
+
+    // T-cycle cost per opcode. For conditional branches (JR/JP/CALL/RET cc)
+    // this holds the "taken" cost; the not-taken cost is overridden inline
+    // in Tick() since it's cheaper than encoding both in the table.
+    byte[] cycleTable = new byte[256];
+    byte[] cbCycleTable = new byte[256];
+
+    void loadCycleTable()
+    {
+        var opcodes_json = System.IO.File.ReadAllText("src/opcodes.json").Split('\n');
+        foreach (string line in opcodes_json)
+        {
+            if (line.Trim().Length == 0) continue;
+            var instruction = System.Text.Json.JsonSerializer.Deserialize<Instruction>(line);
+            int idx = System.Convert.ToInt32(instruction.opcode, 16);
+            if (instruction.prefix == null)
+                cycleTable[idx] = (byte)instruction.cycles;
+            else
+                cbCycleTable[idx] = (byte)instruction.cycles;
+        }
+    }
+
     public CPU(STATE _s)
     {
         S = _s;
+        loadCycleTable();
         reset();
         no_modify_pc = false;
     }
@@ -179,27 +202,27 @@ class CPU
     }
     public ushort getShortAtPC()
     {
-        byte a = S.addr((ushort)(PC + 1));
-        byte b = S.addr((ushort)(PC + 2));
+        byte a = S.read8((ushort)(PC + 1));
+        byte b = S.read8((ushort)(PC + 2));
         return (ushort)(b << 8 | a);
     }
 
     public byte getByteAtPC()
     {
-        return S.addr((ushort)(PC + 1));
+        return S.read8((ushort)(PC + 1));
     }
 
     void writeShortAtSP(ushort v)
     {
         // Console.WriteLine("WRITING {0:X4} to SP @ PC: {1:X4} IC: {2}", v, PC, instructionCounter);
-        S.addr(--SP) = (byte)(v >> 8);
-        S.addr(--SP) = (byte)(v & 0x00ff);
+        S.write8(--SP, (byte)(v >> 8));
+        S.write8(--SP, (byte)(v & 0x00ff));
     }
 
     ushort getShortAtSP()
     {
-        byte a = S.addr(SP++);
-        byte b = S.addr(SP++);
+        byte a = S.read8(SP++);
+        byte b = S.read8(SP++);
         return (ushort)(b << 8 | a);
     }
 
@@ -213,7 +236,7 @@ class CPU
             3 => E,
             4 => H,
             5 => L,
-            6 => S.addr(HL),
+            6 => S.read8(HL),
             7 => A,
             _ => garbage
         };
@@ -258,7 +281,7 @@ class CPU
         {
             if (bi <= 7)
             {
-                S.addr(HL) = getRegByIdx(bi);
+                S.write8(HL, getRegByIdx(bi));
             }
             else
             {
@@ -348,7 +371,11 @@ class CPU
                 method(ref L);
                 break;
             case 6:
-                method(ref S.addr(HL));
+                {
+                    byte tmp = S.read8(HL);
+                    method(ref tmp);
+                    S.write8(HL, tmp);
+                }
                 break;
             case 7:
                 method(ref A);
@@ -423,97 +450,98 @@ class CPU
     }
 
     bool no_modify_pc = false;
-    public void Tick()
+    public int Tick()
     {
         cache_store();
         instructionCounter += 1;
-        var op = S.addr(PC);
+        var op = S.read8(PC);
+        int cycles = cycleTable[op];
         switch (op)
         {
             case 0x00:
-                return;
+                return cycles;
             case 0x01:
                 BC = getShortAtPC();
-                return;
+                return cycles;
             case 0x02:
-                S.addr(getByteAtPC()) = A;
-                return;
+                S.write8(getByteAtPC(), A);
+                return cycles;
             case 0x03:
                 BC++;
-                return;
+                return cycles;
             case 0x0b:
                 BC--;
-                return;
+                return cycles;
             case 0x08:
                 var address = getShortAtPC();
-                S.addr(address++) = (byte)(SP & 0x00ff);
-                S.addr(address) = (byte)(SP >> 8);
-                return;
+                S.write8(address++, (byte)(SP & 0x00ff));
+                S.write8(address, (byte)(SP >> 8));
+                return cycles;
             case 0x04:
                 inc_reg(ref B);
-                return;
+                return cycles;
             case 0x0c:
                 inc_reg(ref C);
-                return;
+                return cycles;
             case 0x18:
                 // JR i8
                 PC = (ushort)(PC + (sbyte)getByteAtPC());
                 // no_modify_pc = true;
-                return;
+                return cycles;
 
             case 0x36:
-                S.addr(HL) = getByteAtPC();
-                return;
+                S.write8(HL, getByteAtPC());
+                return cycles;
             case 0x16:
                 D = getByteAtPC();
-                return;
+                return cycles;
             case 0xc3:
                 // JP u16
                 PC = getShortAtPC();
                 no_modify_pc = true;
-                return;
+                return cycles;
             case 0x21:
                 HL = (getShortAtPC());
-                return;
+                return cycles;
             case 0x23:
                 HL++;
-                return;
+                return cycles;
 
             case 0x1b:
                 DE--;
-                return;
+                return cycles;
             case 0x2B:
                 HL--;
-                return;
+                return cycles;
             case 0x26:
                 H = getByteAtPC();
-                return;
+                return cycles;
             case 0x2d:
                 dec_reg(ref L);
-                return;
+                return cycles;
 
             case 0x13:
                 DE++;
-                return;
+                return cycles;
             case 0x33:
                 SP++;
-                return;
+                return cycles;
             case 0xde:
                 sbc_reg(ref A, getByteAtPC());
-                return;
+                return cycles;
             case 0x11:
                 DE = getShortAtPC();
-                return;
+                return cycles;
 
             case 0x3b:
                 SP--;
-                return;
+                return cycles;
             case 0x09:
                 HL = add_wide(HL, BC);
-                return;
+                return cycles;
             case 0x19:
                 HL = add_wide(HL, DE);
-                return;
+                return cycles;
             case 0x38:
                 // JR C i8
                 sbyte rel = (sbyte)getByteAtPC();
@@ -522,21 +550,33 @@ class CPU
                     PC = (ushort)(PC + rel);
                     // no_modify_pc=true;
                 }
-                return;
+                else
+                {
+                    cycles = 8;
+                }
+                return cycles;
             case 0xCA:
                 if (F.zero)
                 {
                     PC = getShortAtPC();
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 12;
+                }
+                return cycles;
             case 0xDA:
                 if (F.carry)
                 {
                     PC = getShortAtPC();
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 12;
+                }
+                return cycles;
 
             case 0xD2:
                 // JP NC u16
@@ -545,11 +585,15 @@ class CPU
                     PC = getShortAtPC();
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 12;
+                }
+                return cycles;
             case 0x39:
                 // var ohl = HL;
                 HL = add_wide(HL, SP);
-                return;
+                return cycles;
             case 0xe8:
                 {
                     var vi = (sbyte)getByteAtPC();
@@ -560,7 +604,7 @@ class CPU
                     F.negative = false;
                     F.half_carry = (tmp & 0x10) == 0x10;
                     F.carry = (tmp & 0x100) == 0x100;
-                    return;
+                    return cycles;
                 }
             case 0xf8:
                 {
@@ -572,50 +616,50 @@ class CPU
                     F.negative = false;
                     F.half_carry = (tmp & 0x10) == 0x10;
                     F.carry = (tmp & 0x100) == 0x100;
-                    return;
+                    return cycles;
                 }
             case 0xf9:
                 SP = HL;
-                return;
+                return cycles;
             // -- 
             case 0x12:
                 // if (DE == 0xc800)
-                S.addr(DE) = A;
+                S.write8(DE, A);
                 // S.addr(DE) = A;
                 // if (DE == 0xc800)
                 // Console.WriteLine("LD DE, A WROTE {0:X2} to {1:X4}", A, DE);
-                return;
+                return cycles;
             // --
             case 0x1c:
                 inc_reg(ref E);//add_reg(ref E, 1);
-                return;
+                return cycles;
             case 0x1d:
                 dec_reg(ref E);//sub_reg(ref E, 1);
-                return;
+                return cycles;
             case 0x0d:
                 dec_reg(ref C);
                 // sub_reg(ref C, 1);
-                return;
+                return cycles;
             case 0x14:
                 inc_reg(ref D);//add_reg(ref D, 1);
-                return;
+                return cycles;
             case 0x24:
                 inc_reg(ref H);
                 // add_reg(ref H, 1);
-                return;
+                return cycles;
             case 0x32:
-                S.addr(HL--) = A;
+                S.write8(HL--, A);
                 // A = S.addr(HL--);
-                return;
+                return cycles;
             case 0x22:
-                S.addr(HL++) = A;
-                return;
+                S.write8(HL++, A);
+                return cycles;
             case 0x1a:
-                A = S.addr(DE);
-                return;
+                A = S.read8(DE);
+                return cycles;
             case 0x0a:
-                A = S.addr(BC);
-                return;
+                A = S.read8(BC);
+                return cycles;
             case 0x27:
 
                 if (!F.negative)
@@ -648,20 +692,20 @@ class CPU
 
                 F.half_carry = false;
                 F.zero = A == 0;
-                return;
+                return cycles;
             case 0x29:
                 var ohl = HL;
                 HL = add_wide(ohl, ohl);
-                return;
+                return cycles;
             case 0xe0:
-                S.addr((ushort)(0xff00 + getByteAtPC())) = A;
-                return;
+                S.write8((ushort)(0xff00 + getByteAtPC()), A);
+                return cycles;
             case 0xf0:
-                A = S.addr((ushort)(0xff00 + getByteAtPC()));
-                return;
+                A = S.read8((ushort)(0xff00 + getByteAtPC()));
+                return cycles;
             case 0xfe:
                 cp_reg(ref A, getByteAtPC());
-                return;
+                return cycles;
             case 0x20:
                 if (!F.zero)
                 {
@@ -669,14 +713,18 @@ class CPU
                     PC = (ushort)(PC + (sbyte)getByteAtPC());
                     // no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 8;
+                }
+                return cycles;
             case 0xe9:
                 PC = HL;
                 no_modify_pc = true;
-                return;
+                return cycles;
             case 0x3c:
                 inc_reg(ref A);
-                return;
+                return cycles;
             case 0xc2:
                 // JP NZ u16
                 if (!F.zero)
@@ -685,7 +733,11 @@ class CPU
                     PC = getShortAtPC();
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 12;
+                }
+                return cycles;
 
             case 0x28:
                 if (F.zero)
@@ -694,7 +746,11 @@ class CPU
                     PC = (ushort)(PC + (sbyte)(getByteAtPC()));
                     // no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 8;
+                }
+                return cycles;
             case 0x30:
                 if (!F.carry)
                 {
@@ -702,7 +758,11 @@ class CPU
                     PC = (ushort)(PC + (sbyte)(getByteAtPC()));
                     // no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 8;
+                }
+                return cycles;
             case 0x1f:
                 var c = F.carry ? 1 << 7 : 0;
                 F.carry = (A & (1 << 0)) == 1;
@@ -711,134 +771,134 @@ class CPU
                 F.negative = false;
                 F.zero = false;
                 F.half_carry = false;
-                return;
+                return cycles;
             case 0xee:
                 xor_reg(ref A, getByteAtPC());
-                return;
+                return cycles;
             case 0x25:
                 dec_reg(ref H);
-                return;
+                return cycles;
             case 0x3d:
                 dec_reg(ref A);
-                return;
+                return cycles;
             case 0xce:
                 adc_reg(ref A, getByteAtPC());
-                return;
+                return cycles;
             // case 0xc8:
 
             case 0x0e:
                 C = getByteAtPC();
-                return;
+                return cycles;
             case 0x2a:
-                A = S.addr(HL);
+                A = S.read8(HL);
                 HL++;
-                return;
+                return cycles;
             case 0x3a:
-                A = S.addr(HL);
+                A = S.read8(HL);
                 HL--;
-                return;
+                return cycles;
             case 0x31:
                 SP = getShortAtPC();
-                return;
+                return cycles;
 
             case 0xe5:
                 writeShortAtSP(HL);
-                return;
+                return cycles;
             case 0xf5:
                 writeShortAtSP(AF);
-                return;
+                return cycles;
             case 0xd5:
                 writeShortAtSP(DE);
-                return;
+                return cycles;
             case 0xc5:
                 writeShortAtSP(BC);
-                return;
+                return cycles;
             case 0xe1:
                 HL = getShortAtSP();
-                return;
+                return cycles;
             case 0xf1:
                 AF = getShortAtSP();
-                return;
+                return cycles;
             case 0xd1:
                 DE = getShortAtSP();
-                return;
+                return cycles;
             case 0xc1:
                 BC = getShortAtSP();
-                return;
+                return cycles;
             #region RST INSTRUCTIONS
             case 0xff:
                 // RST 38h
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x38;
                 no_modify_pc = true;
-                return;
+                return cycles;
             case 0xef:
                 // RST 28h
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x28;
                 no_modify_pc = true;
-                return;
+                return cycles;
             case 0xdf:
                 // RST 38h
                 // Console.WriteLine("RST: {0:X4}", PC + 1);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x18;
                 no_modify_pc = true;
-                return;
+                return cycles;
             case 0xd7:
                 // RST 10h
                 // Console.WriteLine("RST: {0:X4}", PC+1);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x10;
                 no_modify_pc = true;
-                return;
+                return cycles;
             case 0xe7:
                 // RST 20h
                 // Console.WriteLine("RST: {0:X4}", PC+1);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x20;
                 no_modify_pc = true;
-                return;
+                return cycles;
             case 0xf7:
                 // RST 30h
                 // Console.WriteLine("RST: {0:X4}", PC);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x30;
                 no_modify_pc = true;
-                return;
+                return cycles;
             case 0xcf:
                 // RST 38h
                 // Console.WriteLine("RST: {0:X4}", PC);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x08;
                 no_modify_pc = true;
-                return;
+                return cycles;
             case 0xc7:
                 // Console.WriteLine("RST: {0:X4}", PC);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x00;
                 no_modify_pc = true;
-                return;
+                return cycles;
             #endregion
             case 0xEA:
                 var addr = getShortAtPC();
-                S.addr(addr) = A;
-                return;
+                S.write8(addr, A);
+                return cycles;
             case 0xf3:
                 S.interrupts.enabled = false;
-                return;
+                return cycles;
             case 0xfb:
                 S.interrupts.enabled = true;
-                return;
+                return cycles;
             case 0x3e:
                 A = getByteAtPC();
-                return;
+                return cycles;
             case 0x2e:
                 L = getByteAtPC();
-                return;
+                return cycles;
             case 0x1e:
                 E = getByteAtPC();
-                return;
+                return cycles;
 
             #region RET INSTRUCTIONS
             case 0xc9:
@@ -846,7 +906,7 @@ class CPU
                 PC = getShortAtSP();
                 // Console.WriteLine("RET: {0:X4}", PC);
                 no_modify_pc = true;
-                return;
+                return cycles;
             case 0xc8:
                 // RET Z
                 if (F.zero)
@@ -855,7 +915,11 @@ class CPU
                     // Console.WriteLine("RET: {0:X4}", PC);
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 8;
+                }
+                return cycles;
             case 0xc0:
                 // RET NZ
                 if (!F.zero)
@@ -864,7 +928,11 @@ class CPU
                     // Console.WriteLine("RET: {0:X4}", PC);
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 8;
+                }
+                return cycles;
 
             case 0xd0:
                 // RET NC
@@ -874,7 +942,11 @@ class CPU
                     // Console.WriteLine("RET: {0:X4}", PC);
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 8;
+                }
+                return cycles;
 
             case 0xd8:
                 // RET C
@@ -884,19 +956,27 @@ class CPU
                     // Console.WriteLine("RET: {0:X4}", PC);
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 8;
+                }
+                return cycles;
             case 0xd9:
                 // RETI
                 PC = (ushort)(getShortAtSP() + 0);
                 S.interrupts.enabled = true;
                 // Console.WriteLine("PC: {0:X4}", PC);
                 no_modify_pc = true;
-                return;
+                return cycles;
             #endregion
 
             case 0x35:
-                dec_reg(ref S.addr(HL));
-                return;
+                {
+                    byte tmp = S.read8(HL);
+                    dec_reg(ref tmp);
+                    S.write8(HL, tmp);
+                }
+                return cycles;
 
             #region CALL INSTRUCTIONS
             case 0xCD:
@@ -905,7 +985,7 @@ class CPU
                 PC = getShortAtPC();
                 no_modify_pc = true;
 
-                return;
+                return cycles;
             case 0xd4:
                 if (!F.carry)
                 {
@@ -914,7 +994,11 @@ class CPU
                     PC = getShortAtPC();
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 12;
+                }
+                return cycles;
 
             case 0xCC:
                 if (F.zero)
@@ -924,7 +1008,11 @@ class CPU
                     PC = getShortAtPC();
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 12;
+                }
+                return cycles;
 
             case 0xC4:
                 // CALL NZ, u16
@@ -935,7 +1023,11 @@ class CPU
                     PC = getShortAtPC();
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 12;
+                }
+                return cycles;
 
             case 0xdc:
                 if (F.carry)
@@ -945,58 +1037,64 @@ class CPU
                     PC = getShortAtPC();
                     no_modify_pc = true;
                 }
-                return;
+                else
+                {
+                    cycles = 12;
+                }
+                return cycles;
             #endregion
             case 0xc6:
                 add_reg(ref A, getByteAtPC());
-                return;
+                return cycles;
             case 0xd6:
                 sub_reg(ref A, getByteAtPC());
-                return;
+                return cycles;
             case 0xfa:
                 {
-                    A = S.addr(getShortAtPC());
-                    return;
+                    A = S.read8(getShortAtPC());
+                    return cycles;
                 }
             case 0xe6:
                 and_reg(ref A, getByteAtPC());
-                return;
+                return cycles;
             case 0xf6:
                 or_reg(ref A, getByteAtPC());
-                return;
+                return cycles;
             case 0x06:
                 B = getByteAtPC();
-                return;
+                return cycles;
             case 0x05:
                 dec_reg(ref B);//sub_reg(ref B, 1);
-                return;
+                return cycles;
             case 0x2c:
                 inc_reg(ref L);
                 // add_reg(ref L, 1);
-                return;
+                return cycles;
             // case 0x0e:
             //     C = getByteAtPC();
-            //     return;
+            //     return cycles;
             case 0xCB:
+                var cb_op = getByteAtPC();
                 wideInstruction();
-                return;
+                cycles = cbCycleTable[cb_op];
+                return cycles;
 
             case 0xf2:
-                A = S.addr((ushort)(0xff00 + C));
+                A = S.read8((ushort)(0xff00 + C));
                 // no_modify_pc=true;
-                return;
+                return cycles;
 
             case 0x2f:
                 F.negative = true;
                 F.half_carry = true;
                 A = (byte)~A;
-                return;
+                return cycles;
 
             case 0x3f:
                 F.negative = false;
                 F.half_carry = false;
                 F.carry = !F.carry;
-                return;
+                return cycles;
 
             case 0x17:
                 // RLA
@@ -1006,7 +1104,7 @@ class CPU
                 F.zero = false;
                 F.half_carry = false;
                 F.negative = false;
-                return;
+                return cycles;
 
             case 0x0f:
                 // RRCA
@@ -1015,7 +1113,7 @@ class CPU
                 F.half_carry = false;
                 F.carry = A > 0x7f;
                 F.negative = false;
-                return;
+                return cycles;
 
             case 0x07:
                 // RLCA
@@ -1024,25 +1122,25 @@ class CPU
                 F.zero = false;
                 F.half_carry = false;
                 F.negative = false;
-                return;
+                return cycles;
 
             case 0x15:
                 dec_reg(ref D);
-                return;
+                return cycles;
 
             case 0x37:
                 F.negative = false;
                 F.half_carry = false;
                 F.carry = true;
-                return;
+                return cycles;
 
             case 0xe2:
-                S.addr((ushort)(0xff00 + C)) = A;
-                return;
+                S.write8((ushort)(0xff00 + C), A);
+                return cycles;
 
             case 0x34:
-                S.addr(HL)++;
-                return;
+                S.write8(HL, (byte)(S.read8(HL) + 1));
+                return cycles;
             default:
                 // Console.WriteLine("[!!] Unexpected instruction: {0,2:x}", op);
                 break;
@@ -1058,24 +1156,25 @@ class CPU
             case 0x6:
             case 0x7:
                 ld_rr(op_id - 4, op_operand);
-                return;
+                return cycles;
             case 0x8:
                 al_rr(op_operand, (ref byte x) => add_reg(ref x, getRegByIdx(op_operand)), (ref byte x) => adc_reg(ref x, getRegByIdx(op_operand)));
-                return;
+                return cycles;
             case 0x9:
                 al_rr(op_operand, (ref byte x) => sub_reg(ref x, getRegByIdx(op_operand)), (ref byte x) => sbc_reg(ref x, getRegByIdx(op_operand)));
-                return;
+                return cycles;
             case 0xB:
                 al_rr(op_operand, (ref byte x) => or_reg(ref x, getRegByIdx(op_operand)), (ref byte x) => cp_reg(ref x, getRegByIdx(op_operand)));
-                return;
+                return cycles;
             case 0xA:
                 al_rr(op_operand, (ref byte x) => and_reg(ref x, getRegByIdx(op_operand)), (ref byte x) => xor_reg(ref x, getRegByIdx(op_operand)));
-                return;
+                return cycles;
                 // case 
         }
 
         Console.WriteLine("\x1b[31m[!!] Unexpected instruction: {0:x2}\x1b[0m", op);
         found_unimplemented_instr = true;
+        return cycles;
     }
 
 
