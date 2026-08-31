@@ -152,8 +152,9 @@ class CPU
     // in Tick() since it's cheaper than encoding both in the table.
     byte[] cycleTable = new byte[256];
     byte[] cbCycleTable = new byte[256];
+    byte[] bytesTable = new byte[256];
 
-    // Parse opcodes.json into cycleTable/cbCycleTable, indexed by opcode byte
+    // Parse opcodes.json into cycleTable/cbCycleTable/bytesTable, indexed by opcode byte
     void loadCycleTable()
     {
         var opcodes_json = System.IO.File.ReadAllText("src/opcodes.json").Split('\n');
@@ -162,11 +163,14 @@ class CPU
             if (line.Trim().Length == 0) continue;
             var instruction = System.Text.Json.JsonSerializer.Deserialize<Instruction>(line);
             int idx = System.Convert.ToInt32(instruction.opcode, 16);
-            if (instruction.prefix == null)
+            if (instruction.prefix == null){
                 cycleTable[idx] = (byte)instruction.cycles;
-            else
+                bytesTable[idx] = (byte)instruction.bytes;
+            } else {
                 cbCycleTable[idx] = (byte)instruction.cycles;
+            }
         }
+        bytesTable[0xCB] = 2; // CB prefix is always 2 bytes
     }
 
     public CPU(STATE _s)
@@ -1169,6 +1173,7 @@ class CPU
                 // Console.WriteLine("[!!] Unexpected instruction: {0,2:x}", op);
                 goto notSimple;
         }
+        incrementPC(bytesTable[op]);
         return cycles;
 
         notSimple:
@@ -1199,11 +1204,13 @@ class CPU
             default:
                 goto unimplemented;
         }
+        incrementPC(bytesTable[op]);
         return cycles;
 
         unimplemented:
         Console.WriteLine("\x1b[31m[!!] Unexpected instruction: {0:x2}\x1b[0m", op);
         found_unimplemented_instr = true;
+        incrementPC(bytesTable[op]);
         return cycles;
     }
 

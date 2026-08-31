@@ -324,8 +324,4 @@ takeInput:
     // 3 = 0011 Carry | Half Carry |
     // 2 = 0010       | Half Carry |
     // 1 = 0001 Carry |            |             |
-
-    public void IncrementPC() {
-        C.incrementPC(getInstruction(opcode).bytes);
-    }
 }

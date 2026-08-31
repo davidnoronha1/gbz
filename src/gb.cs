@@ -16,7 +16,6 @@ class GBEmulator {
     public int Tick(){
         dbg.DebugTick();
         int cycles = cpu.Tick();
-        dbg.IncrementPC();
         ppu.Step(cycles);
         return cycles;
     }
