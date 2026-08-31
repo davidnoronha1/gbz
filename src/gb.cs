@@ -13,33 +13,21 @@ class GBEmulator {
 
     public void DisableDebug(){ dbg.SetNonInteractive(); }
 
-    // Step one CPU instruction + PPU (used by Gfx burst mode)
     public int Tick(){
+        dbg.DebugTick();
         int cycles = cpu.Tick();
         dbg.IncrementPC();
         ppu.Step(cycles);
         return cycles;
     }
 
-    // Run for ~one frame (70224 dots) – burst mode for Raylib loop (PPU_GUIDE 5)
-    public void RunForDots(int dots){
-        int acc=0;
-        while(acc < dots){
-            dbg.DebugTick();
-            acc += Tick();
-        }
-    }
-
     public void run() {
         while (true) {
-            dbg.DebugTick(); // here opcode is set
             Tick();
         }
     }
 
-    // Non-blocking run for Gfx – steps one frame per Raylib tick
     public void RunWithGfx(){
-        DisableDebug();
         GfxEntry.Run(this);
     }
 }
