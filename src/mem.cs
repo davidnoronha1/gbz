@@ -1,4 +1,7 @@
-class Interrupts {
+using Raylib_cs;
+
+class Interrupts
+{
     public bool enabled = false; // IME - gates whether any dispatch happens at all
     public byte mask = 0;  // IE (0xffff) - which sources are allowed to fire
     public byte flags = 0; // IF (0xff0f) - which sources currently have a pending request
@@ -21,12 +24,13 @@ class Interrupts {
     public void Request(int bit) { flags |= (byte)(1 << bit); }
 }
 
-class STATE {
+class STATE
+{
     byte[] ROM;
     byte[] WRAM1 = new byte[4096];
     byte[] WRAM2 = new byte[4096];
     byte[] HRAM = new byte[0xfffe - 0xff80 + 1];
-    byte[] VRAM = new byte[0x9fff - 0x8000 + 1];
+    public byte[] VRAM = new byte[0x9fff - 0x8000 + 1];
     byte[] OAM = new byte[0xfe9f - 0xfe00 + 1];
     byte[] IO = new byte[0xff7f - 0xff00 + 1];
     public Interrupts interrupts = new Interrupts();
@@ -36,15 +40,42 @@ class STATE {
 
     // PPU-owned register state. The CPU can't write these directly - a
     // future PPU will update them as it steps through modes/scanlines.
-    public byte LY = 0;
-    byte statHardwareBits = 0; // bits 0-2: mode (0-1) + coincidence (2)
+    private byte _LY;
+    public const ushort _STAT = 0xff41;
+    public const ushort _LCDC = 0xff40;
+    public const ushort _LYC = 0xff45;
 
-    public void SetLY(byte v) { LY = v; }
-    public void SetSTATHardwareBits(int mode, bool coincidence) {
-        statHardwareBits = (byte)((mode & 0x3) | (coincidence ? 1 << 2 : 0));
+    private void onLYorLYCupdate(byte value)
+    {
+        
+        if (value == this.addrNoHook(0xff45))
+        {
+            this.addrNoHook(_STAT) |= (byte)(1 << 2);
+            if ((this.addrNoHook(0xff41) & (1 << 6)) != 0 && (addrNoHook(_LCDC) & (1 << 7)) != 0)
+            {
+                interrupts.Request(Interrupts.LCDStatBit);
+            }
+        }
+        else
+        {
+            this.addrNoHook(_STAT) &= unchecked((byte)~(1 << 2));
+        }
     }
 
-    public STATE (string rom_path) {
+    public byte LY
+    {
+        get => _LY;
+        set
+        {
+            onLYorLYCupdate(value);
+            _LY = value;
+        }
+    }
+
+
+
+    public STATE(string rom_path)
+    {
         rom_path_ = rom_path;
         Console.WriteLine("READING ROM: {0}", rom_path);
         ROM = System.IO.File.ReadAllBytes(rom_path);
@@ -52,7 +83,8 @@ class STATE {
 
     byte garbage = 0;
 
-    public void reset() {
+    public void reset()
+    {
         Array.Clear(WRAM1);
         Array.Clear(WRAM2);
         Array.Clear(HRAM);
@@ -60,14 +92,14 @@ class STATE {
         Array.Clear(OAM);
         Array.Clear(IO);
         LY = 0;
-        statHardwareBits = 0;
         ROM = System.IO.File.ReadAllBytes(rom_path_);
     }
 
     // Raw storage access with no special-register semantics - used by read8/
     // write8 for the plumbing, and by the debugger to peek/poke memory
     // (including registers) without hardware restrictions getting in the way.
-    public ref byte addrNoHook(ushort idx) {
+    public ref byte addrNoHook(ushort idx)
+    {
         if (idx <= 0x7fff)
         {
             return ref ROM[idx];
@@ -75,7 +107,8 @@ class STATE {
 
         if (idx >= 0xc000 && idx <= 0xcfff)
         {
-            if (idx - 0xc000 >= WRAM1.Length) {
+            if (idx - 0xc000 >= WRAM1.Length)
+            {
                 Console.WriteLine("{0:X4} is in bounds for WRAM1 but does not fit", idx);
                 return ref garbage;
             }
@@ -127,7 +160,8 @@ class STATE {
         return ref garbage;
     }
 
-    public ref byte addr(ushort idx) {
+    public ref byte addr(ushort idx)
+    {
         if (debug_hook != null)
             debug_hook.memAccessHook(idx);
 
@@ -138,7 +172,8 @@ class STATE {
     // hardware semantics that a plain array reference can't express: LY is
     // read-only, STAT's low 3 bits are PPU-owned, and writing DMA kicks off
     // an OAM copy.
-    public byte read8(ushort idx) {
+    public byte read8(ushort idx)
+    {
         if (debug_hook != null)
             debug_hook.memAccessHook(idx);
 
@@ -149,25 +184,34 @@ class STATE {
 
         if (idx == 0xff41) // STAT
         {
-            byte upper = IO[idx - 0xff00];
-            return (byte)((upper & 0xf8) | statHardwareBits);
+            return (byte)(IO[idx - 0xff00] | 0x80);
         }
 
         return addrNoHook(idx);
     }
 
-    public void write8(ushort idx, byte value) {
+    public void write8(ushort idx, byte value)
+    {
         if (debug_hook != null)
             debug_hook.memAccessHook(idx);
 
         if (idx == 0xff44) // LY is read-only to the CPU
         {
+            Console.WriteLine("--- write to LY! ---");
             return;
         }
 
+        if (idx == STATE._LYC)
+        {
+            IO[idx - 0xff00] = value;
+            onLYorLYCupdate(LY);
+            return;
+        }
+
+
         if (idx == 0xff41) // STAT - only the upper 5 bits (interrupt sources) are CPU-writable
         {
-            IO[idx - 0xff00] = (byte)(value & 0xf8);
+            IO[idx - 0xff00] = (byte)((IO[idx - 0xff00] & 0x07) | (value & 0xf8) | 0x80);
             return;
         }
 

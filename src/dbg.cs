@@ -16,13 +16,15 @@ class Debugger {
     StreamReader logfile;
     string log_path = "";
     // string[] logFile;
+    public void SetNonInteractive(){ stepDebug=false; stop_at_invalid_access=false; no_print_every_instr=true; }
+
     public Debugger(STATE _s, CPU _c, string rom_path) {
         S = _s;
         C = _c;
         S.debug_hook = this;
         var opcodes_json = System.IO.File.ReadAllText("src/opcodes.json").Split('\n');   
         log_path = rom_path.Replace(".gb", ".txt");
-        logfile = new StreamReader(log_path);
+        try{ logfile = new StreamReader(log_path); } catch{ logfile = StreamReader.Null; }
         foreach (string opcode in opcodes_json) {
             var instruction = System.Text.Json.JsonSerializer.Deserialize<Instruction>(opcode);
             if (instruction.prefix == null) {

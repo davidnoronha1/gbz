@@ -74,6 +74,7 @@ class CPU
     byte A = 0x11;
     byte garbage = 0xff;
     ushort[] registerCache = new ushort[8];
+    // Snapshot registers before executing an instruction, so rewind() can undo it
     void cache_store()
     {
         registerCache[0] = AF;
@@ -84,6 +85,7 @@ class CPU
         registerCache[5] = PC;
     }
 
+    // Restore registers to the last cache_store() snapshot
     public void rewind()
     {
         AF = registerCache[0];
@@ -151,6 +153,7 @@ class CPU
     byte[] cycleTable = new byte[256];
     byte[] cbCycleTable = new byte[256];
 
+    // Parse opcodes.json into cycleTable/cbCycleTable, indexed by opcode byte
     void loadCycleTable()
     {
         var opcodes_json = System.IO.File.ReadAllText("src/opcodes.json").Split('\n');
@@ -174,6 +177,7 @@ class CPU
         no_modify_pc = false;
     }
 
+    // Post-boot-ROM register state matching the BGB debugger, for cross-checking traces
     public void resetBGB()
     {
         PC = 0x0100;
@@ -185,6 +189,7 @@ class CPU
         no_modify_pc = true;
     }
 
+    // Post-boot-ROM register state per Pan Docs, used for normal emulation start
     public void reset()
     {
         instructionCounter = -1;
@@ -200,6 +205,7 @@ class CPU
         L = 0x4D;
         no_modify_pc = true;
     }
+    // Read the 16-bit little-endian immediate that follows the opcode at PC
     public ushort getShortAtPC()
     {
         byte a = S.read8((ushort)(PC + 1));
@@ -207,11 +213,13 @@ class CPU
         return (ushort)(b << 8 | a);
     }
 
+    // Read the 8-bit immediate that follows the opcode at PC
     public byte getByteAtPC()
     {
         return S.read8((ushort)(PC + 1));
     }
 
+    // Push a 16-bit value onto the stack, decrementing SP (used by CALL/RST/PUSH)
     void writeShortAtSP(ushort v)
     {
         // Console.WriteLine("WRITING {0:X4} to SP @ PC: {1:X4} IC: {2}", v, PC, instructionCounter);
@@ -219,6 +227,7 @@ class CPU
         S.write8(--SP, (byte)(v & 0x00ff));
     }
 
+    // Pop a 16-bit value off the stack, incrementing SP (used by RET/POP)
     ushort getShortAtSP()
     {
         byte a = S.read8(SP++);
@@ -226,6 +235,7 @@ class CPU
         return (ushort)(b << 8 | a);
     }
 
+    // Map the SM83's 3-bit register index (B,C,D,E,H,L,(HL),A) to its value
     byte getRegByIdx(int idx)
     {
         return (idx % 8) switch
@@ -242,6 +252,7 @@ class CPU
         };
     }
 
+// Load double register
     void ld_rr(int ai, int bi)
     {
         if (ai == 0) // 0x4
@@ -290,6 +301,7 @@ class CPU
         }
     }
 
+// Subtraction with carry
     void sbc_reg(ref byte reg, int v)
     {
         short carry = F.carry ? (short)1 : (short)0;
@@ -302,6 +314,7 @@ class CPU
         A = total;
     }
 
+// Add registers 8b
     void add_reg(ref byte register, byte value)
     {
         F.half_carry = (register & 0x0f) + (value & 0x0f) > 0x0f;
@@ -312,6 +325,7 @@ class CPU
         F.carry = result > 0xff;
     }
 
+// Add registers 16b
     ushort add_wide(int wr, int v)
     {
         var result = wr + v;
@@ -322,6 +336,7 @@ class CPU
         return (ushort)(result);
     }
 
+// Increment register
     void inc_reg(ref byte register)
     {
         F.half_carry = (register & 0x0f) == 0x0f;
@@ -330,6 +345,7 @@ class CPU
         F.negative = false;
     }
 
+// Choose left or right method based on cb
     delegate void register_method(ref byte i);
     void al_rr(int op_operand, register_method left, register_method right)
     {
@@ -343,6 +359,7 @@ class CPU
         }
     }
 
+// Run on any register, choose low or high based on op
     void cb_rr(int op_operand, register_method left, register_method right)
     {
         var method = left;
@@ -383,6 +400,7 @@ class CPU
         }
     }
 
+// Bitwise OR
     void or_reg(ref byte reg, byte v)
     {
         F.negative = false;
@@ -392,6 +410,7 @@ class CPU
         F.zero = reg == 0;
     }
 
+// Bitwise AND
     void and_reg(ref byte reg, byte v)
     {
         F.negative = false;
@@ -401,6 +420,7 @@ class CPU
         F.zero = reg == 0;
     }
 
+// Bitwise XOR
     void xor_reg(ref byte reg, byte v)
     {
         F.negative = false;
@@ -410,6 +430,7 @@ class CPU
         F.zero = reg == 0;
     }
 
+// compare register
     void cp_reg(ref byte reg, byte v)
     {
         F.zero = reg == v;
@@ -418,6 +439,7 @@ class CPU
         F.carry = v > reg;
     }
 
+// Subtract registers 8b
     // TODO: See if inlining helps any, https://stackoverflow.com/questions/473782/inline-functions-in-c
     void sub_reg(ref byte register, byte value)
     {
@@ -428,6 +450,7 @@ class CPU
         F.zero = register == 0;
     }
 
+// add with carry
     void adc_reg(ref byte reg, byte v)
     {
         short carry = F.carry ? (short)1 : (short)0;
@@ -441,6 +464,7 @@ class CPU
         F.carry = result > 0xff;
     }
 
+// decrement register
     void dec_reg(ref byte register)
     {
         F.half_carry = (register & 0x0f) == 0;
@@ -459,89 +483,89 @@ class CPU
         switch (op)
         {
             case 0x00:
-                return cycles;
+                break;
             case 0x01:
                 BC = getShortAtPC();
-                return cycles;
+                break;
             case 0x02:
                 S.write8(getByteAtPC(), A);
-                return cycles;
+                break;
             case 0x03:
                 BC++;
-                return cycles;
+                break;
             case 0x0b:
                 BC--;
-                return cycles;
+                break;
             case 0x08:
                 var address = getShortAtPC();
                 S.write8(address++, (byte)(SP & 0x00ff));
                 S.write8(address, (byte)(SP >> 8));
-                return cycles;
+                break;
             case 0x04:
                 inc_reg(ref B);
-                return cycles;
+                break;
             case 0x0c:
                 inc_reg(ref C);
-                return cycles;
+                break;
             case 0x18:
                 // JR i8
                 PC = (ushort)(PC + (sbyte)getByteAtPC());
                 // no_modify_pc = true;
-                return cycles;
+                break;
 
             case 0x36:
                 S.write8(HL, getByteAtPC());
-                return cycles;
+                break;
             case 0x16:
                 D = getByteAtPC();
-                return cycles;
+                break;
             case 0xc3:
                 // JP u16
                 PC = getShortAtPC();
                 no_modify_pc = true;
-                return cycles;
+                break;
             case 0x21:
-                HL = (getShortAtPC());
-                return cycles;
+                HL = getShortAtPC();
+                break;
             case 0x23:
                 HL++;
-                return cycles;
+                break;
 
             case 0x1b:
                 DE--;
-                return cycles;
+                break;
             case 0x2B:
                 HL--;
-                return cycles;
+                break;
             case 0x26:
                 H = getByteAtPC();
-                return cycles;
+                break;
             case 0x2d:
                 dec_reg(ref L);
-                return cycles;
+                break;
 
             case 0x13:
                 DE++;
-                return cycles;
+                break;
             case 0x33:
                 SP++;
-                return cycles;
+                break;
             case 0xde:
                 sbc_reg(ref A, getByteAtPC());
-                return cycles;
+                break;
             case 0x11:
                 DE = getShortAtPC();
-                return cycles;
+                break;
 
             case 0x3b:
                 SP--;
-                return cycles;
+                break;
             case 0x09:
                 HL = add_wide(HL, BC);
-                return cycles;
+                break;
             case 0x19:
                 HL = add_wide(HL, DE);
-                return cycles;
+                break;
             case 0x38:
                 // JR C i8
                 sbyte rel = (sbyte)getByteAtPC();
@@ -554,7 +578,7 @@ class CPU
                 {
                     cycles = 8;
                 }
-                return cycles;
+                break;
             case 0xCA:
                 if (F.zero)
                 {
@@ -565,7 +589,7 @@ class CPU
                 {
                     cycles = 12;
                 }
-                return cycles;
+                break;
             case 0xDA:
                 if (F.carry)
                 {
@@ -576,7 +600,7 @@ class CPU
                 {
                     cycles = 12;
                 }
-                return cycles;
+                break;
 
             case 0xD2:
                 // JP NC u16
@@ -589,11 +613,11 @@ class CPU
                 {
                     cycles = 12;
                 }
-                return cycles;
+                break;
             case 0x39:
                 // var ohl = HL;
                 HL = add_wide(HL, SP);
-                return cycles;
+                break;
             case 0xe8:
                 {
                     var vi = (sbyte)getByteAtPC();
@@ -604,7 +628,7 @@ class CPU
                     F.negative = false;
                     F.half_carry = (tmp & 0x10) == 0x10;
                     F.carry = (tmp & 0x100) == 0x100;
-                    return cycles;
+                    break;
                 }
             case 0xf8:
                 {
@@ -616,11 +640,11 @@ class CPU
                     F.negative = false;
                     F.half_carry = (tmp & 0x10) == 0x10;
                     F.carry = (tmp & 0x100) == 0x100;
-                    return cycles;
+                    break;
                 }
             case 0xf9:
                 SP = HL;
-                return cycles;
+                break;
             // -- 
             case 0x12:
                 // if (DE == 0xc800)
@@ -628,38 +652,38 @@ class CPU
                 // S.addr(DE) = A;
                 // if (DE == 0xc800)
                 // Console.WriteLine("LD DE, A WROTE {0:X2} to {1:X4}", A, DE);
-                return cycles;
+                break;
             // --
             case 0x1c:
                 inc_reg(ref E);//add_reg(ref E, 1);
-                return cycles;
+                break;
             case 0x1d:
                 dec_reg(ref E);//sub_reg(ref E, 1);
-                return cycles;
+                break;
             case 0x0d:
                 dec_reg(ref C);
                 // sub_reg(ref C, 1);
-                return cycles;
+                break;
             case 0x14:
                 inc_reg(ref D);//add_reg(ref D, 1);
-                return cycles;
+                break;
             case 0x24:
                 inc_reg(ref H);
                 // add_reg(ref H, 1);
-                return cycles;
+                break;
             case 0x32:
                 S.write8(HL--, A);
                 // A = S.addr(HL--);
-                return cycles;
+                break;
             case 0x22:
                 S.write8(HL++, A);
-                return cycles;
+                break;
             case 0x1a:
                 A = S.read8(DE);
-                return cycles;
+                break;
             case 0x0a:
                 A = S.read8(BC);
-                return cycles;
+                break;
             case 0x27:
 
                 if (!F.negative)
@@ -692,20 +716,20 @@ class CPU
 
                 F.half_carry = false;
                 F.zero = A == 0;
-                return cycles;
+                break;
             case 0x29:
                 var ohl = HL;
                 HL = add_wide(ohl, ohl);
-                return cycles;
+                break;
             case 0xe0:
                 S.write8((ushort)(0xff00 + getByteAtPC()), A);
-                return cycles;
+                break;
             case 0xf0:
                 A = S.read8((ushort)(0xff00 + getByteAtPC()));
-                return cycles;
+                break;
             case 0xfe:
                 cp_reg(ref A, getByteAtPC());
-                return cycles;
+                break;
             case 0x20:
                 if (!F.zero)
                 {
@@ -717,14 +741,14 @@ class CPU
                 {
                     cycles = 8;
                 }
-                return cycles;
+                break;
             case 0xe9:
                 PC = HL;
                 no_modify_pc = true;
-                return cycles;
+                break;
             case 0x3c:
                 inc_reg(ref A);
-                return cycles;
+                break;
             case 0xc2:
                 // JP NZ u16
                 if (!F.zero)
@@ -737,7 +761,7 @@ class CPU
                 {
                     cycles = 12;
                 }
-                return cycles;
+                break;
 
             case 0x28:
                 if (F.zero)
@@ -750,7 +774,7 @@ class CPU
                 {
                     cycles = 8;
                 }
-                return cycles;
+                break;
             case 0x30:
                 if (!F.carry)
                 {
@@ -762,7 +786,7 @@ class CPU
                 {
                     cycles = 8;
                 }
-                return cycles;
+                break;
             case 0x1f:
                 var c = F.carry ? 1 << 7 : 0;
                 F.carry = (A & (1 << 0)) == 1;
@@ -771,134 +795,134 @@ class CPU
                 F.negative = false;
                 F.zero = false;
                 F.half_carry = false;
-                return cycles;
+                break;
             case 0xee:
                 xor_reg(ref A, getByteAtPC());
-                return cycles;
+                break;
             case 0x25:
                 dec_reg(ref H);
-                return cycles;
+                break;
             case 0x3d:
                 dec_reg(ref A);
-                return cycles;
+                break;
             case 0xce:
                 adc_reg(ref A, getByteAtPC());
-                return cycles;
+                break;
             // case 0xc8:
 
             case 0x0e:
                 C = getByteAtPC();
-                return cycles;
+                break;
             case 0x2a:
                 A = S.read8(HL);
                 HL++;
-                return cycles;
+                break;
             case 0x3a:
                 A = S.read8(HL);
                 HL--;
-                return cycles;
+                break;
             case 0x31:
                 SP = getShortAtPC();
-                return cycles;
+                break;
 
             case 0xe5:
                 writeShortAtSP(HL);
-                return cycles;
+                break;
             case 0xf5:
                 writeShortAtSP(AF);
-                return cycles;
+                break;
             case 0xd5:
                 writeShortAtSP(DE);
-                return cycles;
+                break;
             case 0xc5:
                 writeShortAtSP(BC);
-                return cycles;
+                break;
             case 0xe1:
                 HL = getShortAtSP();
-                return cycles;
+                break;
             case 0xf1:
                 AF = getShortAtSP();
-                return cycles;
+                break;
             case 0xd1:
                 DE = getShortAtSP();
-                return cycles;
+                break;
             case 0xc1:
                 BC = getShortAtSP();
-                return cycles;
+                break;
             #region RST INSTRUCTIONS
             case 0xff:
                 // RST 38h
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x38;
                 no_modify_pc = true;
-                return cycles;
+                break;
             case 0xef:
                 // RST 28h
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x28;
                 no_modify_pc = true;
-                return cycles;
+                break;
             case 0xdf:
                 // RST 38h
                 // Console.WriteLine("RST: {0:X4}", PC + 1);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x18;
                 no_modify_pc = true;
-                return cycles;
+                break;
             case 0xd7:
                 // RST 10h
                 // Console.WriteLine("RST: {0:X4}", PC+1);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x10;
                 no_modify_pc = true;
-                return cycles;
+                break;
             case 0xe7:
                 // RST 20h
                 // Console.WriteLine("RST: {0:X4}", PC+1);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x20;
                 no_modify_pc = true;
-                return cycles;
+                break;
             case 0xf7:
                 // RST 30h
                 // Console.WriteLine("RST: {0:X4}", PC);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x30;
                 no_modify_pc = true;
-                return cycles;
+                break;
             case 0xcf:
                 // RST 38h
                 // Console.WriteLine("RST: {0:X4}", PC);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x08;
                 no_modify_pc = true;
-                return cycles;
+                break;
             case 0xc7:
                 // Console.WriteLine("RST: {0:X4}", PC);
                 writeShortAtSP((ushort)(PC + 1));
                 PC = 0x0000 + 0x00;
                 no_modify_pc = true;
-                return cycles;
+                break;
             #endregion
             case 0xEA:
                 var addr = getShortAtPC();
                 S.write8(addr, A);
-                return cycles;
+                break;
             case 0xf3:
                 S.interrupts.enabled = false;
-                return cycles;
+                break;
             case 0xfb:
                 S.interrupts.enabled = true;
-                return cycles;
+                break;
             case 0x3e:
                 A = getByteAtPC();
-                return cycles;
+                break;
             case 0x2e:
                 L = getByteAtPC();
-                return cycles;
+                break;
             case 0x1e:
                 E = getByteAtPC();
-                return cycles;
+                break;
 
             #region RET INSTRUCTIONS
             case 0xc9:
@@ -906,7 +930,7 @@ class CPU
                 PC = getShortAtSP();
                 // Console.WriteLine("RET: {0:X4}", PC);
                 no_modify_pc = true;
-                return cycles;
+                break;
             case 0xc8:
                 // RET Z
                 if (F.zero)
@@ -919,7 +943,7 @@ class CPU
                 {
                     cycles = 8;
                 }
-                return cycles;
+                break;
             case 0xc0:
                 // RET NZ
                 if (!F.zero)
@@ -932,7 +956,7 @@ class CPU
                 {
                     cycles = 8;
                 }
-                return cycles;
+                break;
 
             case 0xd0:
                 // RET NC
@@ -946,7 +970,7 @@ class CPU
                 {
                     cycles = 8;
                 }
-                return cycles;
+                break;
 
             case 0xd8:
                 // RET C
@@ -960,14 +984,14 @@ class CPU
                 {
                     cycles = 8;
                 }
-                return cycles;
+                break;
             case 0xd9:
                 // RETI
                 PC = (ushort)(getShortAtSP() + 0);
                 S.interrupts.enabled = true;
                 // Console.WriteLine("PC: {0:X4}", PC);
                 no_modify_pc = true;
-                return cycles;
+                break;
             #endregion
 
             case 0x35:
@@ -976,7 +1000,7 @@ class CPU
                     dec_reg(ref tmp);
                     S.write8(HL, tmp);
                 }
-                return cycles;
+                break;
 
             #region CALL INSTRUCTIONS
             case 0xCD:
@@ -985,7 +1009,7 @@ class CPU
                 PC = getShortAtPC();
                 no_modify_pc = true;
 
-                return cycles;
+                break;
             case 0xd4:
                 if (!F.carry)
                 {
@@ -998,7 +1022,7 @@ class CPU
                 {
                     cycles = 12;
                 }
-                return cycles;
+                break;
 
             case 0xCC:
                 if (F.zero)
@@ -1012,7 +1036,7 @@ class CPU
                 {
                     cycles = 12;
                 }
-                return cycles;
+                break;
 
             case 0xC4:
                 // CALL NZ, u16
@@ -1027,7 +1051,7 @@ class CPU
                 {
                     cycles = 12;
                 }
-                return cycles;
+                break;
 
             case 0xdc:
                 if (F.carry)
@@ -1041,35 +1065,35 @@ class CPU
                 {
                     cycles = 12;
                 }
-                return cycles;
+                break;
             #endregion
             case 0xc6:
                 add_reg(ref A, getByteAtPC());
-                return cycles;
+                break;
             case 0xd6:
                 sub_reg(ref A, getByteAtPC());
-                return cycles;
+                break;
             case 0xfa:
                 {
                     A = S.read8(getShortAtPC());
-                    return cycles;
+                    break;
                 }
             case 0xe6:
                 and_reg(ref A, getByteAtPC());
-                return cycles;
+                break;
             case 0xf6:
                 or_reg(ref A, getByteAtPC());
-                return cycles;
+                break;
             case 0x06:
                 B = getByteAtPC();
-                return cycles;
+                break;
             case 0x05:
                 dec_reg(ref B);//sub_reg(ref B, 1);
-                return cycles;
+                break;
             case 0x2c:
                 inc_reg(ref L);
                 // add_reg(ref L, 1);
-                return cycles;
+                break;
             // case 0x0e:
             //     C = getByteAtPC();
             //     return cycles;
@@ -1077,24 +1101,24 @@ class CPU
                 var cb_op = getByteAtPC();
                 wideInstruction();
                 cycles = cbCycleTable[cb_op];
-                return cycles;
+                break;
 
             case 0xf2:
                 A = S.read8((ushort)(0xff00 + C));
                 // no_modify_pc=true;
-                return cycles;
+                break;
 
             case 0x2f:
                 F.negative = true;
                 F.half_carry = true;
                 A = (byte)~A;
-                return cycles;
+                break;
 
             case 0x3f:
                 F.negative = false;
                 F.half_carry = false;
                 F.carry = !F.carry;
-                return cycles;
+                break;
 
             case 0x17:
                 // RLA
@@ -1104,7 +1128,7 @@ class CPU
                 F.zero = false;
                 F.half_carry = false;
                 F.negative = false;
-                return cycles;
+                break;
 
             case 0x0f:
                 // RRCA
@@ -1113,7 +1137,7 @@ class CPU
                 F.half_carry = false;
                 F.carry = A > 0x7f;
                 F.negative = false;
-                return cycles;
+                break;
 
             case 0x07:
                 // RLCA
@@ -1122,29 +1146,32 @@ class CPU
                 F.zero = false;
                 F.half_carry = false;
                 F.negative = false;
-                return cycles;
+                break;
 
             case 0x15:
                 dec_reg(ref D);
-                return cycles;
+                break;
 
             case 0x37:
                 F.negative = false;
                 F.half_carry = false;
                 F.carry = true;
-                return cycles;
+                break;
 
             case 0xe2:
                 S.write8((ushort)(0xff00 + C), A);
-                return cycles;
+                break;
 
             case 0x34:
                 S.write8(HL, (byte)(S.read8(HL) + 1));
-                return cycles;
+                break;
             default:
                 // Console.WriteLine("[!!] Unexpected instruction: {0,2:x}", op);
-                break;
+                goto notSimple;
         }
+        return cycles;
+
+        notSimple:
 
         var op_id = op >> 4;
         var op_operand = op & 0x0f;
@@ -1156,28 +1183,32 @@ class CPU
             case 0x6:
             case 0x7:
                 ld_rr(op_id - 4, op_operand);
-                return cycles;
+                break;
             case 0x8:
                 al_rr(op_operand, (ref byte x) => add_reg(ref x, getRegByIdx(op_operand)), (ref byte x) => adc_reg(ref x, getRegByIdx(op_operand)));
-                return cycles;
+                break;
             case 0x9:
                 al_rr(op_operand, (ref byte x) => sub_reg(ref x, getRegByIdx(op_operand)), (ref byte x) => sbc_reg(ref x, getRegByIdx(op_operand)));
-                return cycles;
+                break;
             case 0xB:
                 al_rr(op_operand, (ref byte x) => or_reg(ref x, getRegByIdx(op_operand)), (ref byte x) => cp_reg(ref x, getRegByIdx(op_operand)));
-                return cycles;
+                break;
             case 0xA:
                 al_rr(op_operand, (ref byte x) => and_reg(ref x, getRegByIdx(op_operand)), (ref byte x) => xor_reg(ref x, getRegByIdx(op_operand)));
-                return cycles;
-                // case 
+                break;
+            default:
+                goto unimplemented;
         }
+        return cycles;
 
+        unimplemented:
         Console.WriteLine("\x1b[31m[!!] Unexpected instruction: {0:x2}\x1b[0m", op);
         found_unimplemented_instr = true;
         return cycles;
     }
 
 
+    // Decode and execute a 0xCB-prefixed instruction (rotate/shift/bit/res/set)
     void wideInstruction()
     {
         var opcode = getByteAtPC();
@@ -1436,6 +1467,7 @@ class CPU
     }
 
     public bool found_unimplemented_instr = false;
+    // Advance PC by the instruction's byte length, unless Tick() already jumped it (no_modify_pc)
     public void incrementPC(int v)
     {
         if (!no_modify_pc)
@@ -1449,6 +1481,7 @@ class CPU
         }
     }
 
+    // Debugger hook to force A's value directly
     public void SETA(byte v)
     {
         A = v;
